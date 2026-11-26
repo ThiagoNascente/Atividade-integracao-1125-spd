@@ -110,7 +110,7 @@ Se o Módulo 2 estiver fora do ar, a rota tenta a requisição **3 vezes com int
 é guardado na lista Redis `crud-retry-queue` (Dead Letter). Para reprocessá-la:
 
 ```bash
-./gradlew :modulo-3-integrador:run --args="--reprocessar"
+bash ./gradlew :modulo-3-integrador:run --args="--reprocessar"
 ```
 
 ## 3. Modelagem
@@ -196,19 +196,19 @@ ecomerce-spd-moises/
 ├── modulo-1-orm/           ClienteOrm (Exposed), ClienteOrmRepository, OrmServer, OrmApp
 ├── modulo-2-odm/           DestinatarioOdm + mapper, DestinatarioRepository, OdmServer, OdmServerApp
 ├── modulo-3-integrador/    model/, translator/, processor/, repository/, redis/, routes/, retry/, IntegradorApp
-└── scripts/demo.sh         demonstração ponta a ponta com curl
+└── scripts/demo.sh         demonstração ponta a ponta com Bash e Python 3
 ```
 
 ## 4. Compilação e Infraestrutura
 
-Requisitos: **JDK 21** e **Docker**.
+Use **JDK 21** e **Docker com Compose**. No PowerShell, use `.\gradlew.bat` no lugar de `bash ./gradlew`.
 
 ```bash
 # 1. Infraestrutura (Redis 7 em :6379 e MongoDB 7 em :27017)
 docker compose up -d        # (ou docker-compose up -d)
 
 # 2. Compilar tudo e rodar os testes
-./gradlew build             # no Windows: gradlew.bat build
+bash ./gradlew build             # no PowerShell: .\gradlew.bat build
 ```
 
 ## Execução
@@ -218,20 +218,20 @@ assinando o canal antes das publicações — Pub/Sub não guarda mensagens para
 
 ```bash
 # Terminal 1 — Integrador
-./gradlew :modulo-3-integrador:run
+bash ./gradlew :modulo-3-integrador:run
 
 # Terminal 2 — Módulo 2 (ODM / MongoDB)  → http://localhost:8080
-./gradlew :modulo-2-odm:run
+bash ./gradlew :modulo-2-odm:run
 
 # Terminal 3 — Módulo 1 (ORM / SQLite)   → http://localhost:8081
-./gradlew :modulo-1-orm:run
+bash ./gradlew :modulo-1-orm:run
 ```
 
 Os arquivos `orm.db` e `integrador.db` são criados dentro da pasta de cada módulo.
 Variáveis de ambiente opcionais: `REDIS_URI`, `MONGO_URI`, `ODM_URL`, `ORM_URL`, `ORM_DB`,
 `INTEGRADOR_DB`, `ORM_PORT`, `ODM_PORT`.
 
-Para rodar o roteiro completo: `bash scripts/demo.sh`
+Quando a assinatura do canal `crud-channel` e as APIs estiverem prontas, execute `bash scripts/demo.sh` em um quarto terminal com Bash e Python 3. O roteiro usa os IDs retornados pelas APIs e aguarda a confirmação de cada sincronização.
 
 ### API dos módulos
 
@@ -254,55 +254,30 @@ Para rodar o roteiro completo: `bash scripts/demo.sh`
 | `CrudTransformRouteTest` | modulo-3-integrador | **ponta a ponta da rota Camel** com ODM e ORM falsos (Javalin): CREATE/UPDATE/DELETE, idempotência, fluxo reverso, anti-loop (`X-Sync-Origin`), ODM fora do ar → fila de retry | não |
 
 ```bash
-./gradlew test                              # todos
-./gradlew :modulo-3-integrador:test         # só o integrador
+bash ./gradlew test                              # todos
+bash ./gradlew :modulo-3-integrador:test         # só o integrador
 ```
 
 O teste **de ponta a ponta real** (com Redis e MongoDB) é o roteiro `scripts/demo.sh`.
 
-## 6. Exemplos de Execução Bem-Sucedida
+## 6. Exemplos de execução bem-sucedida
 
-> ⚠️ **Antes de entregar:** substitua os trechos abaixo por *prints/logs reais* da sua execução.
-> Eles mostram o formato esperado, derivado das mensagens de log do código.
+O build Gradle concluiu com `BUILD SUCCESSFUL` e os 28 testes passaram. Com Redis e MongoDB reais, duas execuções consecutivas de `bash scripts/demo.sh` produziram estes resultados.
 
-**a) Inserção no Módulo 1 (ORM)**
+| Execução | ID do cliente no SQLite | ID do destinatário no MongoDB |
+| --- | --- | --- |
+| Primeira | `1` | `6b0780d1754bcc55f17ba3da` |
+| Segunda | `2` | `6b0780d3754bcc55f17ba3db` |
 
-```text
-$ curl -X POST localhost:8081/clientes -H 'Content-Type: application/json' \
-    -d '{"nomeCompleto":"Ana Souza","cpf":"12345678900","enderecoEntrega":"Rua 10, Goiânia","statusCredito":"APROVADO"}'
-{"id":1,"nomeCompleto":"Ana Souza","cpf":"12345678900","enderecoEntrega":"Rua 10, Goiânia","statusCredito":"APROVADO"}
-```
+Nas duas execuções, `Ana Souza` virou `Souza, Ana` no MongoDB. A alteração no ORM atualizou o endereço e bloqueou o envio no ODM. Ao liberar o envio por lá, o ORM voltou a exibir `statusCredito=APROVADO`. Os registros da primeira execução foram preservados. Com o integrador desligado, o roteiro terminou com código `1` após o tempo limite.
 
-**b) Evento trafegando no Redis** (`docker exec -it spd-redis redis-cli SUBSCRIBE crud-channel`)
+Uma execução manual também confirmou a exclusão. `DELETE /clientes/1` retornou HTTP `204`, a consulta do destinatário correspondente retornou HTTP `404` e o Camel registrou a remoção do canônico e do mapeamento.
 
 ```text
-1) "message"
-2) "crud-channel"
-3) "{\"entity\":\"Cliente\",\"operation\":\"CREATE\",\"source\":\"ORM\",\"data\":\"{\\\"id\\\":1,...}\",\"timestamp\":\"...\"}"
-```
-
-**c) Logs da rota Apache Camel (Terminal 1)**
-
-```text
-[REDIS] Mensagem recebida em 'crud-channel': {"entity":"Cliente","operation":"CREATE",...}
-[CAMEL] Evento Cliente CREATE origem=ORM -> rota ORM_TO_ODM
-[CAMEL] Traduzido ORM -> canônico <uuid> -> ODM DestinatarioOdmPayload(id=null, nomeExibicao=Souza, Ana, ...)
-[CAMEL] Persistido canônico <uuid> e mapeamento idOrm=1 <-> idOdm=<ObjectId>
-orm-to-odm - Sincronizado ORM -> ODM: POST /destinatarios
-```
-
-**d) Registro no MongoDB (Módulo 2)**
-
-```text
-$ docker exec spd-mongo mongosh logistica --quiet --eval 'db.destinatarios.find()'
-[{ _id: ObjectId('...'), nomeExibicao: 'Souza, Ana', logradouroDestino: 'Rua 10, Goiânia', liberadoParaEnvio: true }]
-```
-
-**e) Tabela de mapeamento canônico (`integrador.db`)**
-
-```text
-$ sqlite3 modulo-3-integrador/integrador.db "select * from mapeamento_id;"
-<uuid>|1|<ObjectId>
+[CAMEL] Persistido canônico 11946ccb-6534-400a-a6d3-3ff8866774eb e mapeamento idOrm=1 <-> idOdm=6b077e1f21c9746c02121181
+Sincronizado ORM -> ODM: POST /destinatarios
+Sincronizado ODM -> ORM: PUT /clientes/1
+Sincronizado ORM -> ODM: DELETE /destinatarios/6b077e1f21c9746c02121181
 ```
 
 ## 7. Limitações conhecidas
